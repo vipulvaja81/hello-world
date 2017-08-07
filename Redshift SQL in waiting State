@@ -1,0 +1,2 @@
+select * from stv_recents where status<>'Done'
+and pid not in (select pid from stv_inflight);
