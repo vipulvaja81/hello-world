@@ -1,0 +1,56 @@
+/* Redshift table details with size, rows and dist key */
+
+SELECT ti.schemaname||'.'||ti.tablename AS "table",
+  ti.tbl_rows,
+  avg(r.s_rows_pre_filter) avg_s_rows_pre_filter,
+  round(1::float - avg(r.s_rows_pre_filter)::float/ti.tbl_rows::float,6) avg_prune_pct,
+  avg(r.s_rows) avg_s_rows,
+  round(1::float - avg(r.s_rows)::float/avg(r.s_rows_pre_filter)::float,6) avg_filter_pct,
+  ti.diststyle,
+  ti.sortkey_num,
+  ti.sortkey1,
+  trim(a.typname) "type",
+  count(distinct i.query) * avg(r.time) AS total_scan_secs,
+  avg(r.time) AS scan_time,
+  count(distinct i.query) AS num,
+  max(i.query) AS query,
+  trim(info) AS filter
+FROM stl_explain p
+JOIN stl_plan_info i
+ON (i.userid=p.userid AND i.query=p.query AND i.nodeid=p.nodeid )
+JOIN stl_scan s
+ON (s.userid=i.userid AND s.query=i.query AND s.segment=i.segment AND s.step=i.step)
+JOIN (
+  SELECT table_id,
+    "table" tablename,
+    schema schemaname,
+    tbl_rows,
+    unsorted,
+    sortkey1,
+    sortkey_num,
+    diststyle
+  FROM svv_table_info) ti
+ON ti.table_id=s.tbl
+JOIN (
+  SELECT query,
+    segment,
+    step,
+    datediff(s,min(starttime),max(endtime)) AS time,
+    sum(rows) s_rows,
+    sum(rows_pre_filter) s_rows_pre_filter,
+    round(sum(rows)::float/sum(rows_pre_filter)::float,6) filter_pct
+  FROM stl_scan
+  WHERE userid>1 AND starttime::date = current_date-1 AND starttime < endtime
+  GROUP BY 1,2,3 HAVING sum(rows_pre_filter) > 0 ) r
+ON (r.query = i.query AND r.segment = i.segment AND r.step = i.step)
+LEFT JOIN (
+  SELECT attrelid,
+    t.typname
+  FROM pg_attribute a
+  JOIN pg_type t
+  ON t.oid=a.atttypid
+  WHERE attsortkeyord IN (1,-1)) a
+ON a.attrelid=s.tbl
+WHERE s.type = 2 AND ti.tbl_rows > 1000000 AND p.info LIKE 'Filter:%' AND p.nodeid > 0
+GROUP BY 1,2,7,8,9,10,15
+ORDER BY 1, 13 desc, 11 desc;
