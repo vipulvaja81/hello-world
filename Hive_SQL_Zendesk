@@ -1,0 +1,69 @@
+set hive.execution.engine=mr;
+set mapreduce.map.memory.mb=4000;
+set mapreduce.map.java.opts=-Xmx3600m;
+set mapreduce.reduce.memory.mb=4000;
+set mapreduce.reduce.java.opts=-Xmx3600m;
+
+
+
+add jar s3://elasticmapreduce/samples/hive-ads/libs/jsonserde.jar;
+
+drop table if exists Dictionary;
+CREATE EXTERNAL TABLE Dictionary(name STRING,  rating BIGINT)
+ ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t'
+ STORED AS TEXTFILE
+ LOCATION 's3n://vgwdata/Dictionary/';
+
+
+drop table if exists zd_comment_json;
+
+CREATE EXTERNAL TABLE zd_comment_json (
+    ticket_id string, id string, zendesk_comment string
+  )
+  ROW FORMAT
+    serde 'org.apache.hive.hcatalog.data.JsonSerDe'
+    with serdeproperties ( 'paths'='ticket_id,id,zendesk_comment' )
+  LOCATION 's3n://vgwdata/json/zendesk_comments';
+
+/* select * from zd_comment_json limit 10 */
+
+Drop table if exists split_zendesk_comment;
+CREATE TABLE /*EXTERNAL*/ split_zendesk_comment  (
+    ticket_id string,
+    words ARRAY<string>)   STORED AS PARQUET
+LOCATION  's3n://vgwdata/json/split_zendesk_comment/';
+
+
+/* select * from split_zendesk_comment limit 10 */
+
+Insert overwrite table split_zendesk_comment  select ticket_id as ticket_id,split(zendesk_comment,' ') as words from zd_comment_json;
+
+
+Drop table if exists comment_word;
+CREATE /*EXTERNAL*/ TABLE  comment_word  (
+    ticket_id string,
+    word string )   STORED AS PARQUET
+LOCATION  's3n://vgwdata/json/comment_word';
+
+Insert into  table comment_word  select ticket_id as ticket_id,word from split_zendesk_comment LATERAL VIEW explode(words) w as word;
+
+Drop table if exists word_join;
+CREATE /*EXTERNAL*/ TABLE  word_join  (
+    ticket_id string,
+    word string,
+   rating  decimal(8,2)
+    )   STORED AS PARQUET LOCATION  's3n://vgwdata/json/word_join';
+
+
+Insert overwrite table word_join select comment_word.ticket_id,comment_word.word,Dictionary.rating as rating from comment_word left outer join Dictionary on (comment_word.word=Dictionary.name);
+
+--select * from Dictionary
+
+ ---select ticket_id,AVG(rating) as rating from word_join GROUP BY word_join.ticket_id order by rating DESC; 
+
+/* Cleanup task */ 
+Drop table if exists comment_word;
+Drop table if exists split_zendesk_comment;
+drop table if exists zd_comment_json;
+
+select ticket_id,AVG(rating) as rating from word_join GROUP BY word_join.ticket_id order by rating DESC;  
